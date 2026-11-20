@@ -6,7 +6,7 @@ tags:
     - 成长思考
 image: "./cover.jpg"
 category: '日常随笔'
-draft: true
+draft: false
 ---
 马上又要收拾行李去北京了，这次是去一家初创小厂实习。我对于前方既期待又充满了担忧。
 
