@@ -4,6 +4,7 @@ published: 2026-11-20
 tags: 
     - 北京实习
     - 成长思考
+image: "./cover.jpg"
 category: '日常随笔'
 draft: true
 ---
