@@ -509,100 +509,7 @@ CoT 的价值：
 - 多模型交叉验证。
 - 困难样本筛选。
 
-## 3.5 DPO 原理
-
-DPO（Direct Preference Optimization）直接使用偏好数据优化策略模型。
-
-数据形式：
-
-(x, y_w, y_l)
-
-- x：输入 Prompt。
-- y_w：偏好更高的回答。
-- y_l：偏好更低的回答。
-
-核心思想：
-
-让模型提高 chosen 的相对概率，降低 rejected 的相对概率。
-
-DPO Loss：
-
-L = -log σ(β log(πθ(y_w|x)/πref(y_w|x)) - β log(πθ(y_l|x)/πref(y_l|x)))
-
-其中：
-
-- πθ：当前策略模型。
-- πref：参考模型。
-- β：控制偏离参考模型的程度。
-- σ：Sigmoid。
-
-为什么需要 Reference Model？
-
-用于约束策略模型不要偏离初始模型太远，防止模型为了偏好目标而发生过度优化。
-
-### DPO 优点
-
-- 不需要显式训练 Reward Model。
-- 不需要 PPO 采样和强化学习循环。
-- 训练流程相对简单。
-- 直接利用 chosen/rejected 数据。
-
-### DPO 局限
-
-- 对偏好数据质量敏感。
-- 对 chosen/rejected 的相对排序进行优化，不直接衡量绝对质量。
-- 仍需要参考模型。
-- 可能受到长度偏置影响。
-
-## 3.6 SimPO 原理
-
-SimPO（Simple Preference Optimization）是一种 Reference-free 偏好优化方法。
-
-与 DPO 最大的区别：
-
-DPO 需要 Reference Model。
-
-SimPO 不需要 Reference Model。
-
-SimPO 使用策略模型自身的长度归一化序列对数概率作为隐式奖励：
-
-r(x,y) = β/|y| × log πθ(y|x)
-
-然后通过 Margin γ 要求 chosen 的隐式奖励比 rejected 高一定幅度。
-
-核心目标：
-
-r(x,y_w) - r(x,y_l) > γ
-
-其中：
-
-- β：奖励缩放系数。
-- γ：偏好间隔 Margin。
-- |y|：回答 Token 长度。
-
-为什么使用长度归一化？
-
-因为长回答包含更多 Token，累积 Log Probability 通常更负，直接比较序列概率可能引入长度偏差。
-
-长度归一化可以让不同长度回答的奖励更具可比性。
-
-## 3.7 DPO 与 SimPO 对比
-
-| 维度              | DPO        | SimPO     |
-| --------------- | ---------- | --------- |
-| Reference Model | 需要         | 不需要       |
-| 优化目标            | 相对参考模型的概率比 | 长度归一化隐式奖励 |
-| Margin          | 通过偏好目标隐式约束 | 显式引入 γ    |
-| 训练成本            | 较高         | 相对较低      |
-| 长度处理            | 原始序列概率形式   | 显式长度归一化   |
-
-选择建议：
-
-如果希望利用参考模型约束策略更新，可以选择 DPO。
-
-如果希望降低模型资源开销，并尝试直接优化长度归一化偏好奖励，可以考虑 SimPO。
-
-## 3.8 PPO 原理
+## 3.5 PPO 原理
 
 PPO（Proximal Policy Optimization）是一种策略梯度强化学习算法。
 
@@ -636,7 +543,131 @@ PPO 的缺点：
 - 训练流程复杂。
 - 超参数较多。
 
-## 3.9 GRPO 原理
+**1.PPO 最核心公式**
+
+面试最常见的是 **PPO-Clip**：
+$$
+L^{CLIP}(\theta) = \mathbb{E}_t \left[ \min \left( r_t(\theta)\hat A_t,\; \operatorname{clip}(r_t(\theta),1-\epsilon,1+\epsilon)\hat A_t \right) \right]
+$$
+其中最关键的概率比：
+$$
+r_t(\theta) = \frac{\pi_\theta(a_t|s_t)} {\pi_{\theta_{\text{old}}}(a_t|s_t)}
+$$
+各部分可以这样理解：
+
+- $$
+  \pi_{\theta_{\text{old}}}(a_t|s_t)
+  $$
+
+  ：旧策略采取动作 a_t 的概率
+
+- $$
+  \pi_\theta(a_t|s_t)
+  $$
+
+  ：新策略采取动作 a_t 的概率
+
+- $$
+  r_t(\theta)
+  $$
+
+  ：**新旧策略概率比**
+
+- A^t：优势函数（Advantage），表示这个动作相比平均水平到底好不好
+
+- ϵ\epsilon：裁剪范围，常见如 0.10.1 或 0.20.2
+
+- `clip`：把 r_t 限制在 [1−ϵ,1+ϵ][1-\epsilon,1+\epsilon] 范围内
+
+例如：ϵ=0.2
+
+那么：rt∈[0.8,1.2]
+
+PPO 的核心思想就是：**可以更新策略，但不要一次更新得太猛。**
+
+------
+
+**2. 为什么要有 Advantage？**
+
+优势函数通常写成：
+$$
+A_t = Q(s_t,a_t)-V(s_t)
+$$
+直观理解：
+
+At=采取这个动作有多好−这个状态下平均有多好
+
+所以：At>0  说明这个动作比平均水平好，应该**提高这个动作的概率**。
+
+反过来：At<0  说明这个动作不好，应该**降低这个动作的概率**。
+
+实际 PPO 中通常使用 GAE（Generalized Advantage Estimation，广义优势估计）计算 A^t：
+$$
+\delta_t = r_t+\gamma V(s_{t+1})-V(s_t)
+$$
+
+$$
+   \hat A_t = \delta_t + \gamma\lambda\delta_{t+1} + (\gamma\lambda)^2\delta_{t+2} +\cdots
+$$
+
+面试如果没深入问，**不需要主动展开 GAE 公式**。
+
+------
+
+**3.Clip 到底在干什么？**
+
+假设：
+$$
+\epsilon=0.2
+$$
+旧模型生成某个 token 的概率：
+$$
+\pi_{\text{old}}(a|s)=0.5
+$$
+新模型变成：
+$$
+\pi_\theta(a|s)=0.8
+$$
+那么：
+$$
+r=\frac{0.8}{0.5}=1.6
+$$
+说明策略变化太大。
+
+PPO 会通过：
+$$
+\operatorname{clip}(1.6,0.8,1.2)=1.2
+$$
+限制继续从这种过大的策略变化中获得收益。
+
+所以 PPO 并不是简单粗暴地说“参数不能变化”，而是：**限制新旧策略在动作概率上的变化**
+
+**4.PPO 完整 Loss**
+
+实际训练时通常不只有 Policy Loss，还会加入 Value Loss 和 Entropy：
+$$
+L = L_{\text{policy}} + c_1L_{\text{value}} - c_2H(\pi)
+$$
+其中：
+$$
+L_{\text{value}} = (V_\theta(s_t)-V_t^{target})^2
+$$
+而：
+$$
+H(\pi) = -\sum_a \pi(a|s)\log\pi(a|s)
+$$
+因此三个部分分别负责：
+
+Policy Loss：优化策略\boxed{ \text{Policy Loss：优化策略} }Value Loss：让 Critic 更准确地估计价值\boxed{ \text{Value Loss：让 Critic 更准确地估计价值} }Entropy：鼓励探索，避免策略过早变得过于确定\boxed{ \text{Entropy：鼓励探索，避免策略过早变得过于确定} }
+
+注意不同代码库对 Loss 的正负号定义可能不同，因为论文写的是最大化目标，而代码优化器通常做最小化。
+$$
+\min(r_t\hat{A}_t, \text{clip}(r_t, 1-\epsilon, 1+\epsilon)\hat{A}_t)
+$$
+
+---
+
+## 3.6 GRPO原理
 
 GRPO（Group Relative Policy Optimization）是一种相对 PPO 简化的策略优化方法。
 
@@ -672,15 +703,495 @@ A_i = (r_i - mean(r)) / std(r)
 - 奖励函数设计非常关键。
 - 组内奖励差异不足时，训练信号可能较弱。
 
-## 3.10 GRPO 与 PPO 对比
+> GRPO 全称是 Group Relative Policy Optimization，也就是组相对策略优化。它可以理解为 PPO 在大模型强化学习场景下的一种改进。
+>
+> 它和 PPO 最大的区别在于 Advantage 的计算方式。PPO 通常需要额外训练一个 Critic 或 Value Model 来估计状态价值，而 GRPO 不需要单独的 Critic。
+>
+> GRPO 对同一个 Prompt 一次采样多个 Response，形成一个 Group，然后分别计算这些回答的 Reward，再利用组内 Reward 的均值和标准差进行标准化：
+> $$
+> A_i=\frac{R_i-\operatorname{mean}(R)}{\operatorname{std}(R)}
+> $$
+> 如果一个回答的 Reward 高于组内平均值，那么 Advantage 为正，就提高生成这个回答的概率；如果低于组内平均值，Advantage 为负，就降低它的概率。
+>
+> 在策略更新方面，GRPO 仍然使用类似 PPO 的 probability ratio 和 clipping mechanism，限制新旧策略变化过大；同时通常还会加入相对于 Reference Model 的 KL penalty，防止模型在强化学习过程中偏离原始模型太远。
+>
+> 所以我会把 GRPO 总结成一句话：**对同一个问题采样多个回答，通过组内相对奖励来估计 Advantage，替代 PPO 中的 Critic，再通过 PPO 式 Clip 和 KL 约束稳定地更新策略。**
+>
+> 它的主要优势是省掉了 Critic/Value Model，因此在大语言模型强化学习中可以降低额外的显存和计算开销。             
 
-| 维度        | PPO     | GRPO           |
-| --------- | ------- | -------------- |
-| Critic    | 需要      | 不需要独立 Critic   |
-| Advantage | GAE 等方法 | 组内相对奖励         |
-| 采样        | 策略采样    | 同 Prompt 多回答采样 |
-| 显存        | 较高      | 相对较低           |
-| 训练复杂度     | 较高      | 相对简化           |
+把 **GRPO（Group Relative Policy Optimization，组相对策略优化）**理解成：
+
+> **对同一个问题一次采样多个回答，让这些回答在组内互相比较，用“相对好坏”作为 Advantage，从而不再需要单独训练 Critic/Value Model。**
+
+------
+
+**1. GRPO 最核心公式**
+
+对于一个问题 qq，从旧策略中采样一组回答：
+$$
+\{o_1,o_2,\dots,o_G\} \sim \pi_{\theta_{\text{old}}}(\cdot|q)
+$$
+然后 Reward Model 或规则奖励给每个回答打分：
+$$
+r_1,r_2,\dots,r_G
+$$
+GRPO 最关键的一步，是利用**组内奖励计算 Advantage**：
+$$
+A_i = \frac{r_i-\operatorname{mean}(r_1,\dots,r_G)} {\operatorname{std}(r_1,\dots,r_G)} 
+$$
+也就是：
+
+Advantage=当前回答奖励−组内平均奖励组内奖励标准差
+
+因此：
+
+- Ai>0：这个回答比组内平均水平好 → **提高生成它的概率**
+- Ai<0：这个回答比组内平均水平差 → **降低生成它的概率**
+- Ai≈0：接近平均水平 → 更新较小
+
+这就是 **Group Relative（组内相对）** 的含义。
+
+------
+
+**2. GRPO 的完整目标函数**
+
+经典 GRPO 目标可以写成：
+$$
+\boxed{ J_{\text{GRPO}}(\theta) = \mathbb E \left[ \frac{1}{G} \sum_{i=1}^{G} \frac{1}{|o_i|} \sum_{t=1}^{|o_i|} \left( \min \left( r_{i,t}(\theta)\hat A_i, \operatorname{clip} (r_{i,t}(\theta),1-\epsilon,1+\epsilon) \hat A_i \right) - \beta D_{\mathrm{KL}} \right) \right] }
+$$
+其中：
+$$
+r_{i,t}(\theta) = \frac{ \pi_\theta(o_{i,t}|q,o_{i,<t}) }{ \pi_{\theta_{\text{old}}}(o_{i,t}|q,o_{i,<t}) }
+$$
+注意这里的 ri,t(θ) 是 **policy ratio（策略概率比）**，不要和前面的 reward ri混淆。
+
+------
+
+**3. 这个公式怎么理解？**
+
+其实和 PPO 非常像，可以拆成三部分。
+
+**第一部分：组内 Advantage**
+$$
+A_i = \frac{R_i-\mu_R}{\sigma_R}
+$$
+比如同一个数学题，模型生成 4 个答案：
+
+| 回答     | Reward | Advantage 大致情况 |
+| -------- | ------ | ------------------ |
+| Answer 1 | 1.0    | 正                 |
+| Answer 2 | 0.8    | 正                 |
+| Answer 3 | 0.3    | 负                 |
+| Answer 4 | 0.1    | 负                 |
+
+那么 GRPO 就会认为：
+
+> Answer 1、2 相对比较好，Answer 3、4 相对比较差。
+
+因此不需要 Critic 告诉模型：V(s)=?
+
+直接通过**同一个问题下多个回答之间的相对奖励**构造 baseline。
+
+------
+
+**第二部分：PPO 式 Clip**
+
+GRPO 同样使用：
+$$
+\min \left( r_{i,t}\hat A_i, \operatorname{clip}(r_{i,t},1-\epsilon,1+\epsilon)\hat A_i \right)
+$$
+它的作用和 PPO 基本一致：
+
+防止新策略相对旧策略一次更新得太猛
+
+所以可以记：
+$$
+\boxed{ GRPO = PPO\ Clip + Group\ Relative\ Advantage - Critic }
+$$
+这句话非常适合面试。
+
+------
+
+**4. KL 散度是干什么的？**
+
+GRPO 通常还会加入参考模型 πref\pi_{\text{ref}} 的 KL 约束：
+$$
+D_{\mathrm{KL}} ( \pi_\theta \| \pi_{\text{ref}} )
+$$
+KL 常用无偏估计
+$$
+\frac{\pi_{ref}}{\pi_\theta}-\log\frac{\pi_{ref}}{\pi_\theta}-1
+$$
+
+---
+
+目的就是：**防止强化学习后的模型偏离原来的参考模型太远。**
+
+所以 β 控制 KL 惩罚强度：
+
+β↑⇒对偏离 reference model 的惩罚越强
+
+可以简单理解为：
+
+Clip：限制相邻两次策略更新
+
+KL：限制模型偏离ReferenceModel
+
+------
+
+**5. GRPO 和 PPO 最大区别**
+
+PPO 通常需要 Critic / Value Model：At≈Rt−V(st)
+
+也就是说，需要估计：V(st)
+
+而 GRPO 不训练独立 Critic，而是对一个问题生成 G个回答：o1,o2,⋯ ,oG
+
+通过组内奖励：
+$$
+A_i = \frac{R_i-\operatorname{mean}(R)} {\operatorname{std}(R)}
+$$
+估计回答的相对优势。
+
+所以：PPO：Critic→Advantage
+
+而：GRPO：Group Rewards→Advantage
+
+这也是 GRPO 用在大模型 RL 中的一个重要优势：**省掉 Critic 带来的额外模型和显存/计算开销。** 
+
+## 3.7 GRPO与PPO对比
+
+| 维度       | PPO        | GRPO                 |
+| ---------- | ---------- | -------------------- |
+| Critic     | 需要       | 不需要独立 Critic    |
+| Advantage  | GAE 等方法 | 组内相对奖励         |
+| 采样       | 策略采样   | 同 Prompt 多回答采样 |
+| 显存       | 较高       | 相对较低             |
+| 训练复杂度 | 较高       | 相对简化             |
+
+## 3.8 DPO原理
+
+**DPO（Direct Preference Optimization，直接偏好优化）** 理解成：
+
+> **不需要 Reward Model，也不需要 PPO/GRPO 那样在线做强化学习，而是直接利用“哪个回答更好”的偏好数据，让模型提高 preferred response 的概率、降低 rejected response 的概率。**
+>
+> DPO = Preference Data + Reference Model + 直接优化 Policy
+
+> DPO 全称是 Direct Preference Optimization，也就是直接偏好优化。它主要用于大模型的 Preference Alignment。
+>
+> DPO 和传统 RLHF 最大的区别是，它不需要单独训练 Reward Model，也不需要再使用 PPO 做在线强化学习，而是直接利用 preference pair 来优化 Policy。
+>
+> DPO 的训练数据通常由 Prompt、Chosen Response 和 Rejected Response 构成，也就是 ywy_w 优于 yly_l。
+>
+> 它的核心 Loss 是：
+> $$
+> L_{\mathrm{DPO}} = -E\left[ \log\sigma \left( \beta \left[ \log\frac{\pi_\theta(y_w|x)}{\pi_{\mathrm{ref}}(y_w|x)} - \log\frac{\pi_\theta(y_l|x)}{\pi_{\mathrm{ref}}(y_l|x)} \right] \right) \right]
+> $$
+> 其中 πθ\pi_\theta 是当前训练的 Policy Model，πref\pi_{\mathrm{ref}} 是冻结的 Reference Model。
+>
+> 这个公式直观上就是希望当前模型相对于 Reference Model，更加提高 Chosen Response 的相对概率，同时降低 Rejected Response 的相对概率。
+>
+> DPO 可以从带 KL 正则的 RLHF 目标推导出来，把 Reward 和最优 Policy 之间的关系代入 preference model，从而最终得到一个类似二分类或者 pairwise ranking 的优化目标。
+>
+> 所以 DPO 最大的优势就是：**把传统的 Reward Model + RL Policy Optimization 两阶段流程，简化成直接在偏好数据上优化 Policy，训练实现更加简单和稳定。
+
+**1. DPO 的数据长什么样？**
+
+DPO 的训练数据通常是一个三元组：(x,yw,yl)
+
+其中：
+
+- x：Prompt
+- yw：chosen / preferred response，偏好的回答
+- yl：rejected response，不偏好的回答
+
+例如：
+
+```
+Prompt：解释一下什么是梯度下降。
+Response A：正确、清晰、有逻辑。
+Response B：存在明显错误。
+人工偏好：A > B
+```
+
+DPO 的目标非常直接：P(yw∣x)↑P(yl∣x)↓
+
+但这里有个关键问题：
+
+> 不能无限制地提高 chosen、降低 rejected，否则模型可能偏离原来的 SFT 模型太远。
+
+所以 DPO 引入了 **Reference Model（参考模型）**。
+
+------
+
+**2. DPO 最核心公式**
+$$
+\boxed{ L_{\mathrm{DPO}} = -\mathbb E_{(x,y_w,y_l)} \left[ \log\sigma \left( \beta \left[ \log\frac{\pi_\theta(y_w|x)} {\pi_{\mathrm{ref}}(y_w|x)} - \log\frac{\pi_\theta(y_l|x)} {\pi_{\mathrm{ref}}(y_l|x)} \right] \right) \right] }
+$$
+
+------
+
+**3. 第一层：Policy Model 和 Reference Model**
+
+其中：πθ
+
+是**当前正在训练的 Policy Model。**
+
+而πref是：
+
+> **冻结的 Reference Model。**
+
+Reference Model 通常可以来自训练开始时的 SFT 模型副本。
+
+所以：
+$$
+\log \frac{\pi_\theta(y_w|x)} {\pi_{\mathrm{ref}}(y_w|x)}
+$$
+表示：当前模型相对于 Reference Model，**对 chosen response 的偏好提高了多少**。
+
+而：
+$$
+\log \frac{\pi_\theta(y_l|x)} {\pi_{\mathrm{ref}}(y_l|x)}
+$$
+表示：当前模型相对于 Reference Model，**对 rejected response 的偏好提高了多少**。
+
+------
+
+**4. 第二层：Chosen 和 Rejected 做差**
+
+定义：
+$$
+z= \beta \left[ \log\frac{\pi_\theta(y_w|x)} {\pi_{\mathrm{ref}}(y_w|x)} - \log\frac{\pi_\theta(y_l|x)} {\pi_{\mathrm{ref}}(y_l|x)} \right]
+$$
+DPO 希望：z→+∞
+
+也就是：
+$$
+\boxed{ \log\frac{\pi_\theta(y_w|x)} {\pi_{\mathrm{ref}}(y_w|x)} > \log\frac{\pi_\theta(y_l|x)} {\pi_{\mathrm{ref}}(y_l|x)} }
+$$
+通俗理解就是：
+
+> **相对于 Reference Model，我希望当前模型更加偏向 chosen，而不是 rejected。**
+
+------
+
+**5. 第三层：为什么有 sigmoid？**
+
+DPO 使用：
+$$
+\sigma(z)=\frac{1}{1+e^{-z}}
+$$
+然后：
+$$
+L=-\log\sigma(z)
+$$
+如果：z≫0
+
+说明模型已经很好地区分：yw>yl
+
+那么：σ(z)→1
+
+所以：L→0L
+
+反过来，如果模型更喜欢 rejected：z<0
+
+那么 Loss 就会比较大。
+
+因此 DPO 本质上可以理解成：
+
+对 chosen / rejected 做一个 pairwise preference classification
+
+------
+
+**6. β是干什么的？**
+
+β控制 Preference Optimization 与 Reference Policy 约束之间的权衡尺度。
+
+它来自 DPO 对 KL-regularized RLHF 目标的推导。
+
+> β\beta 是 DPO 中控制隐式 KL 正则/偏好优化尺度的重要超参数，它决定模型相对于 Reference Policy 进行偏好调整的强度。
+
+------
+
+**7. 为什么 DPO 不需要 Reward Model？**
+
+传统 RLHF 一般是：SFT→Reward Model→PPO
+
+首先收集：yw>yl
+
+然后训练 Reward Model：rϕ(x,y)
+
+再让 PPO：
+$$
+\max_\theta E[r_\phi(x,y)]
+$$
+也就是说：先把人类偏好学成 Reward Model，再通过 RL 优化 Policy。**
+
+------
+
+DPO 认为：既然最终目的就是让 Policy 学会人类偏好，那能不能直接从 preference pair 优化 Policy？
+
+所以变成：Preference Data→DPO→Policy
+
+省掉：Reward Model
+
+同时也省掉：PPO Online RL\boxed{PPO\ Online\ RL}
+
+所以：DPO最大优势=训练流程简单、稳定、成本较低
+
+------
+
+**8. DPO 和 SFT 有什么区别？**
+
+SFT：
+$$
+L_{\mathrm{SFT}} = -\log\pi_\theta(y_w|x)
+$$
+核心：告诉模型：“这个答案是好的，你学习它。
+
+但是它通常没有直接利用：y_l 的信息。
+
+DPO：(x,yw,yl)
+
+不仅告诉模型：A 是好的。还告诉模型：**A 比 B 更好。**
+
+因此：SFT：学习正确答案\boxed{ SFT：学习正确答案 }
+
+而：DPO：学习回答之间的相对偏好\boxed{ DPO：学习回答之间的相对偏好 }
+
+------
+
+**对比**
+
+|                 | PPO                   | GRPO                   | DPO               |
+| --------------- | --------------------- | ---------------------- | ----------------- |
+| 数据            | Rollout               | Group Rollout          | Preference Pair   |
+| Reward          | Reward Model / Reward | Reward / Verifier      | Preference 数据   |
+| Critic          | 通常需要              | 不需要                 | 不需要            |
+| 在线采样        | 需要                  | 需要                   | 通常不需要        |
+| Reference Model | 通常有                | 通常有                 | 有                |
+| 核心思想        | Advantage + Clip      | Group Advantage + Clip | Chosen > Rejected |
+
+### DPO 优点
+
+- 不需要显式训练 Reward Model。
+- 不需要 PPO 采样和强化学习循环。
+- 训练流程相对简单。
+- 直接利用 chosen/rejected 数据。
+
+### DPO 局限
+
+- 对偏好数据质量敏感。
+- 对 chosen/rejected 的相对排序进行优化，不直接衡量绝对质量。
+- 仍需要参考模型。
+- 可能受到长度偏置影响。
+
+所以最核心区别：
+
+PPO/GRPO：OnlineRL
+
+DPO：OfflinePreferenceOptimization
+
+更严谨地说，DPO 通常使用**预先收集好的 preference dataset** 直接训练，而不是像 PPO/GRPO 那样在每轮策略优化过程中进行 rollout 并依据 reward 更新。
+
+
+
+## 3.9 SimPO原理
+
+SimPO（Simple Preference Optimization）是一种 Reference-free 偏好优化方法。
+
+与 DPO 最大的区别：
+
+DPO 需要 Reference Model。
+
+SimPO 不需要 Reference Model。
+
+SimPO 使用策略模型自身的长度归一化序列对数概率作为隐式奖励：
+
+r(x,y) = β/|y| × log πθ(y|x)
+
+然后通过 Margin γ 要求 chosen 的隐式奖励比 rejected 高一定幅度。
+
+核心目标：
+
+r(x,y_w) - r(x,y_l) > γ
+
+其中：
+
+- β：奖励缩放系数。
+- γ：偏好间隔 Margin。
+- |y|：回答 Token 长度。
+
+为什么使用长度归一化？
+
+因为长回答包含更多 Token，累积 Log Probability 通常更负，直接比较序列概率可能引入长度偏差。
+
+长度归一化可以让不同长度回答的奖励更具可比性。
+
+**DPO与SimPO对比**
+
+| 维度            | DPO                  | SimPO              |
+| --------------- | -------------------- | ------------------ |
+| Reference Model | 需要                 | 不需要             |
+| 优化目标        | 相对参考模型的概率比 | 长度归一化隐式奖励 |
+| Margin          | 通过偏好目标隐式约束 | 显式引入 γ         |
+| 训练成本        | 较高                 | 相对较低           |
+| 长度处理        | 原始序列概率形式     | 显式长度归一化     |
+
+选择建议：
+
+如果希望利用参考模型约束策略更新，可以选择 DPO。
+
+如果希望降低模型资源开销，并尝试直接优化长度归一化偏好奖励，可以考虑 SimPO。
+
+## 3.10 DAPO
+
+> DAPO 全称是 Decoupled Clip and Dynamic Sampling Policy Optimization，我把它理解成 GRPO 针对大模型长 CoT 强化学习场景的一系列改进。
+>
+> 相比 GRPO，DAPO 主要有四个改进。
+>
+> **第一个是 Clip-Higher。** GRPO 类似 PPO，通常使用对称的 clipping，比如 [0.8,1.2][0.8,1.2]。DAPO 将上下 clipping bound 解耦，适当提高上界，比如变成 [0.8,1.28][0.8,1.28]。这样可以让低概率但是高 Advantage 的 Token 获得更大的概率提升空间，增强 exploration，同时缓解 entropy collapse。
+>
+> **第二个是 Dynamic Sampling。** GRPO 如果对一个 Prompt 采样出来的 Response 全对或者全错，那么组内 Reward 没有差异，Relative Advantage 就没有有效学习信号。<u>DAPO 会动态过滤这些 Prompt，</u>把训练资源更多用于既有正确回答又有错误回答的样本。
+>
+> **第三个是 Token-Level Policy Gradient Loss。** GRPO 的常见实现<u>会先在每条 Response 内对 Token Loss 求平均，再在样本之间平均</u>；DAPO <u>改成对所有有效 Token 统一聚合，使长 CoT 场景下的 loss weighting 更合理。</u>
+>
+> **第四个是 Overlong Reward Shaping。** <u>对于接近最大生成长度的回答，DAPO 不采用突然的硬惩罚，而是逐渐增加长度惩罚，从而降低因为截断造成的 reward noise。</u>
+>
+> 所以我会把 DAPO 总结成：**它保留了 GRPO 不需要 Critic 和组内相对 Advantage 的优点，然后通过 Clip-Higher、Dynamic Sampling、Token-Level Loss 和 Overlong Reward Shaping，提高长链推理强化学习的训练稳定性和效率。**                    
+
+可以把 **DAPO（Decoupled Clip and Dynamic sAmpling Policy Optimization）** 理解为：
+
+> **DAPO = GRPO + 针对大模型长 CoT 强化学习的 4 个关键修正。**
+
+它没有推翻 GRPO。**组内采样、组内相对 Advantage、PPO-style policy ratio** 这些核心思想仍然保留，但针对 GRPO 实际训练 reasoning model 时出现的几个问题，加入了 **Clip-Higher、Dynamic Sampling、Token-Level Policy Gradient Loss、Overlong Reward Shaping** 四项技术。DAPO 原论文报告，在 Qwen2.5-32B Base 上达到 AIME 2024 50 分，并以约一半训练步数超过其对比的 DeepSeek-R1-Zero-Qwen-32B。
+
+| GRPO 的问题                                    | DAPO 改进                   |
+| ---------------------------------------------- | --------------------------- |
+| Clip 对探索限制太强，可能出现 entropy collapse | **Clip-Higher**             |
+| 一个 Prompt 的回答全对/全错，没有有效梯度      | **Dynamic Sampling**        |
+| Sequence-level loss 对不同长度回答的处理不理想 | **Token-Level PG Loss**     |
+| 超长回答直接惩罚会产生 reward noise            | **Overlong Reward Shaping** |
+
+1、GRPO 使用对称 Clip，而 DAPO 使用非对称 Clip，适当放宽 probability ratio 的上界，使低概率但高收益的 Token 有更大的提升空间，从而增强探索并缓解 entropy collapse。
+
+DAPO 把上下界**解耦**：
+$$
+\boxed{ \operatorname{clip} (r,1-\epsilon_{\text{low}},1+\epsilon_{\text{high}}) }
+$$
+DAPO 就把上界放宽：1.2→1.28
+
+2、Dynamic Sampling 会过滤组内全对或者全错的 Prompt，因为这些样本的 Reward 方差为 0，无法提供有效的 relative advantage，从而减少无效训练样本
+
+3、DAPO 改成 **Token-Level Policy Gradient Loss**：
+$$
+\boxed{ L_{\text{DAPO}} = \frac{1} {\sum_i |o_i|} \sum_i \sum_t L_{i,t} }
+$$
+也就是：
+
+> **把整个 batch/group 里的有效 Token 放在一起做归一化。**
+
+4、快接近最大长度的时候逐渐增加惩罚，而不是超过长度后突然一刀切。
 
 ## 3.11 Reward Function 奖励函数设计
 
@@ -828,7 +1339,8 @@ ViT 使用 Self-Attention 建模全局关系。
 
 面试回答：
 
-我们最初采用冻结 ViT、仅微调 LLM 的方案，主要是考虑到视觉编码器已经具备较强的通用特征提取能力，而任务优化重点在于商品属性理解、跨模态信息融合和判别推理。冻结视觉主干可以减少可训练参数、降低显存开销，并控制小规模业务数据下的过拟合风险。当然，如果实验发现视觉特征存在明显领域偏移，也可以进一步尝试解冻高层 ViT、微调 Projector 或使用视觉 LoRA，通过消融实验比较效果和成本。
+> 我们最初采用冻结 ViT、仅微调 LLM 的方案，主要是考虑到视觉编码器已经具备较强的通用特征提取能力，而任务优化重点在于商品属性理解、跨模态信息融合和判别推理。冻结视觉主干可以减少可训练参数、降低显存开销，并控制小规模业务数据下的过拟合风险。当然，如果实验发现视觉特征存在明显领域偏移，也可以进一步尝试解冻高层 ViT、微调 Projector 或使用视觉 LoRA，通过消融实验比较效果和成本。
+>
 
 ## 4.4 VLM 与 LLM 的区别
 
@@ -1105,9 +1617,9 @@ LangGraph：
 输入：
 
 - 商品标题。
-- 商品图片。
+- 商品图片：主图+概览图
 - 商品规格。
-- 商品属性。
+- 商品属性：类别、平台...
 - 其他业务信息。
 
 输出：
@@ -1179,12 +1691,9 @@ LangGraph：
 辅助标注可以将复杂任务拆分为多个可分析的维度，帮助：
 
 - 数据质量检查。
-- 推理链构建。
-- 错误归因。
+- 下游模型的错误归因。
 - 业务规则分析。
 - 训练样本筛选。
-
-注意：面试时应以实际使用的七个维度为准，不要临时编造维度名称。
 
 ## 6.4 为什么要构建独立 Benchmark？
 
@@ -1415,7 +1924,7 @@ GRPO：优化模型生成的推理轨迹。
 - 压缩推理长度。
 - 降低推理成本。
 
-注意：第二阶段 SFT 不能简单理解为 GRPO 的替代品，它是将强化学习探索得到的优质行为重新转化为监督数据。
+注意：第二阶段 SFT 不能简单理解为 GRPO 的替代品，它是将强化学习探索得到的优质行为重新转化为监督数据。可以理解成我的项目中，GRPO压缩输出token，SFT压缩输入的token。
 
 ## 6.12 项目中可能被追问的指标
 
